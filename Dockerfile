@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -17,7 +17,7 @@ COPY app.py .
 # Install Flask dependencies
 RUN pip install -r requirements.txt
 
-# Install theHarvester properly from source
+# Install theHarvester properly from source with Python 3.12
 RUN git clone https://github.com/laramies/theHarvester.git && \
     cd theHarvester && \
     python3 -m pip install --upgrade pip setuptools wheel && \
