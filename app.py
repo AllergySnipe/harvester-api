@@ -71,20 +71,47 @@ class TheHarvesterAPI:
             return self.fallback_with_patterns(domain, f"general_error: {str(e)}")
     
     def extract_emails_from_harvester(self, stdout, temp_filename):
-        """Extract emails from theHarvester output"""
+        """Extract emails from theHarvester output with proper filtering"""
         emails = set()
         
-        # Method 1: Extract from stdout
-        if stdout:
-            email_patterns = [
-                r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
-                r'[\w\.-]+@[\w\.-]+\.\w+',
-                r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-            ]
+        # Split output into lines for better parsing
+        lines = stdout.split('\n') if stdout else []
+        
+        # Flag to track if we're in the results section
+        in_results_section = False
+        
+        for line in lines:
+            line = line.strip()
             
-            for pattern in email_patterns:
-                found_emails = re.findall(pattern, stdout, re.IGNORECASE)
-                emails.update(found_emails)
+            # Skip theHarvester header/info lines
+            if any(skip in line.lower() for skip in [
+                'theharvester', 'christian martorella', 'edge-security', 
+                'version', 'searching', 'found', 'total results',
+                'starting', 'finished', 'elapsed time'
+            ]):
+                continue
+                
+            # Look for email section markers
+            if 'emails found' in line.lower() or 'email' in line.lower():
+                in_results_section = True
+                continue
+                
+            # Extract emails only from relevant lines
+            if line and '@' in line:
+                email_patterns = [
+                    r'\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})\b',
+                    r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
+                ]
+                
+                for pattern in email_patterns:
+                    found_emails = re.findall(pattern, line, re.IGNORECASE)
+                    for email in found_emails:
+                        # Skip theHarvester author's email and other false positives
+                        if not any(skip in email.lower() for skip in [
+                            'cmartorella', 'edge-security.com', 'christian',
+                            'theharvester', 'example.com', 'test.com'
+                        ]):
+                            emails.add(email.lower())
         
         # Method 2: Try to read from output files
         possible_files = [
@@ -99,33 +126,70 @@ class TheHarvesterAPI:
                 if os.path.exists(file_path):
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         content = f.read()
+                        
+                        # Skip file header/metadata
+                        if 'cmartorella' in content.lower() or 'theharvester' in content.lower():
+                            # Try to find actual results section
+                            content_lines = content.split('\n')
+                            filtered_content = []
+                            
+                            for line in content_lines:
+                                if not any(skip in line.lower() for skip in [
+                                    'theharvester', 'cmartorella', 'edge-security',
+                                    'christian', 'version', 'searching'
+                                ]):
+                                    filtered_content.append(line)
+                            
+                            content = '\n'.join(filtered_content)
+                        
                         file_emails = re.findall(
-                            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', 
+                            r'\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})\b', 
                             content, 
                             re.IGNORECASE
                         )
-                        emails.update(file_emails)
+                        
+                        for email in file_emails:
+                            if not any(skip in email.lower() for skip in [
+                                'cmartorella', 'edge-security.com', 'christian',
+                                'theharvester', 'example.com', 'test.com'
+                            ]):
+                                emails.add(email.lower())
             except:
                 continue
         
-        # Filter emails
-        return self.filter_emails(list(emails))
-    
+        # Filter emails by domain if possible
+        filtered_emails = self.filter_emails(list(emails))
+        
+        return filtered_emails
+
     def filter_emails(self, emails):
-        """Filter out invalid and unwanted emails"""
+        """Filter out invalid and unwanted emails with stricter rules"""
         filtered = []
         skip_patterns = [
+            # theHarvester author and tool references
+            'cmartorella', 'edge-security.com', 'christian', 'theharvester',
+            # Common false positives
             'noreply', 'no-reply', 'donotreply', 'example.com', 'test.com',
             'localhost', 'sentry', 'github.com', 'gitlab.com', 'stackoverflow.com',
-            'linkedin.com', 'facebook.com', 'twitter.com', 'instagram.com'
+            'linkedin.com', 'facebook.com', 'twitter.com', 'instagram.com',
+            # Tool and service emails
+            'support@github.com', 'noreply@github.com', 'security@',
+            'abuse@', 'postmaster@', 'webmaster@', 'hostmaster@'
         ]
         
         for email in emails:
             email = email.lower().strip()
+            
+            # Basic email validation
             if '@' in email and '.' in email.split('@')[1]:
+                # Check if it's not in skip patterns
                 if not any(skip in email for skip in skip_patterns):
+                    # Additional validation
                     if len(email) > 5 and len(email) < 100:  # Reasonable length
-                        filtered.append(email)
+                        # Check if it looks like a real email
+                        parts = email.split('@')
+                        if len(parts) == 2 and len(parts[0]) > 0 and len(parts[1]) > 2:
+                            filtered.append(email)
         
         return list(set(filtered))
     
