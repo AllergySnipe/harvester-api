@@ -13,16 +13,22 @@ WORKDIR /app
 COPY requirements.txt .
 COPY app.py .
 
-# Install Flask dependencies ONLY (remove theHarvester from requirements.txt)
+# Install Flask dependencies
 RUN pip install -r requirements.txt
 
-# Install theHarvester from source
+# Install theHarvester from source with proper error handling
 RUN git clone https://github.com/laramies/theHarvester.git && \
     cd theHarvester && \
-    pip install -r requirements.txt && \
-    pip install . && \
-    cd .. && \
-    chmod +x theHarvester/theHarvester.py
+    # Try different requirements file locations
+    (pip install -r requirements.txt || \
+     pip install -r requirements/base.txt || \
+     pip install -r requirements/dev.txt || \
+     echo "No requirements file found, installing manually") && \
+    # Install common theHarvester dependencies manually
+    pip install requests beautifulsoup4 dnspython shodan censys aiohttp aiodns aiofiles && \
+    # Make theHarvester executable
+    chmod +x theHarvester.py && \
+    cd ..
 
 # Add theHarvester to PATH
 ENV PATH="/app/theHarvester:${PATH}"
