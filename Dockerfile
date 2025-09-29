@@ -14,10 +14,10 @@ WORKDIR /app
 COPY requirements.txt .
 COPY app.py .
 
-# Install Flask dependencies
+# Install dependencies
 RUN pip install -r requirements.txt
 
-# Install theHarvester properly from source with Python 3.12
+# Install theHarvester
 RUN git clone https://github.com/laramies/theHarvester.git && \
     cd theHarvester && \
     python3 -m pip install --upgrade pip setuptools wheel && \
