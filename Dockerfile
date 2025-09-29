@@ -4,29 +4,24 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y \
     git \
     build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Copy application files first
+# Copy application files
 COPY requirements.txt .
 COPY app.py .
 
 # Install Flask dependencies
 RUN pip install -r requirements.txt
 
-# Install theHarvester from source with proper error handling
+# Install theHarvester properly from source
 RUN git clone https://github.com/laramies/theHarvester.git && \
     cd theHarvester && \
-    # Try different requirements file locations
-    (pip install -r requirements.txt || \
-     pip install -r requirements/base.txt || \
-     pip install -r requirements/dev.txt || \
-     echo "No requirements file found, installing manually") && \
-    # Install common theHarvester dependencies manually
-    pip install requests beautifulsoup4 dnspython shodan censys aiohttp aiodns aiofiles && \
-    # Make theHarvester executable
+    python3 -m pip install --upgrade pip setuptools wheel && \
+    python3 -m pip install . && \
     chmod +x theHarvester.py && \
     cd ..
 
@@ -37,5 +32,5 @@ ENV PYTHONPATH="${PYTHONPATH}:/app/theHarvester"
 # Expose port
 EXPOSE 5000
 
-# Start command
+# Start command  
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
