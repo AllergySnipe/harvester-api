@@ -9,28 +9,20 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Install theHarvester
-RUN git clone https://github.com/laramies/theHarvester.git
-WORKDIR /app/theHarvester
-
-# Install theHarvester dependencies - CORRECTED PATH
-RUN pip install -r requirements.txt
-
-# Alternative method if requirements.txt doesn't work
-# RUN pip install -r requirements/base.txt || pip install -r requirements.txt
-
-# Go back to app directory
-WORKDIR /app
-
-# Copy application files
+# Copy application files first
 COPY requirements.txt .
 COPY app.py .
 
-# Install Flask dependencies
+# Install all dependencies including theHarvester
 RUN pip install -r requirements.txt
 
-# Add theHarvester to Python path
-ENV PYTHONPATH="${PYTHONPATH}:/app"
+# Try to install theHarvester from PyPI or source
+RUN pip install theHarvester || \
+    (git clone https://github.com/laramies/theHarvester.git && \
+     cd theHarvester && \
+     pip install . && \
+     cd .. && \
+     rm -rf theHarvester)
 
 # Expose port
 EXPOSE 5000
