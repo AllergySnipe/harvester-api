@@ -3,6 +3,7 @@ FROM python:3.11-slim
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -11,7 +12,12 @@ WORKDIR /app
 # Install theHarvester
 RUN git clone https://github.com/laramies/theHarvester.git
 WORKDIR /app/theHarvester
-RUN pip install -r requirements/base.txt
+
+# Install theHarvester dependencies - CORRECTED PATH
+RUN pip install -r requirements.txt
+
+# Alternative method if requirements.txt doesn't work
+# RUN pip install -r requirements/base.txt || pip install -r requirements.txt
 
 # Go back to app directory
 WORKDIR /app
