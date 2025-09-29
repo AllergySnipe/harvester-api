@@ -17,202 +17,243 @@ class TheHarvesterAPI:
         self.harvester_path = "/app/theHarvester/theHarvester.py"
         
     def run_theharvester(self, domain, sources="google,bing,yahoo", limit=100):
-        """Run theHarvester with proper error handling"""
+        """Run theHarvester with improved parsing and fallback"""
         
-        # Create temporary file for output
-        with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp_file:
-            temp_filename = tmp_file.name
+        # Try theHarvester first
+        harvester_result = self.try_theharvester(domain, sources, limit)
         
-        # Command to run theHarvester
+        # If theHarvester finds emails, return them
+        if harvester_result['emails']:
+            return harvester_result
+        
+        # If no emails found, try basic web scraping as backup
+        scraping_result = self.try_web_scraping(domain)
+        
+        # Combine results or use patterns
+        if scraping_result['emails']:
+            return {
+                "emails": scraping_result['emails'],
+                "count": len(scraping_result['emails']),
+                "domain": domain,
+                "sources": sources,
+                "method": "web_scraping_fallback",
+                "status": "fallback_success",
+                "note": "theHarvester found 0 emails, used web scraping"
+            }
+        else:
+            # Final fallback to patterns
+            return self.fallback_with_patterns(domain, "no_emails_found_anywhere")
+    
+    def try_theharvester(self, domain, sources, limit):
+        """Attempt to run theHarvester"""
+        # Split sources to avoid timeout with too many sources
+        source_list = sources.split(',')
+        quick_sources = source_list[:3]  # Use first 3 sources for speed
+        sources_string = ','.join(quick_sources)
+        
         cmd = [
             "python3", self.harvester_path,
             "-d", domain,
-            "-l", str(limit), 
-            "-b", sources,
-            "-f", temp_filename.replace('.json', '')  # theHarvester adds extension
+            "-l", str(min(limit, 50)),  # Reduce limit for speed
+            "-b", sources_string
         ]
         
         try:
-            # Run theHarvester with timeout
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=90,  # Reduced timeout
                 cwd="/app/theHarvester"
             )
             
-            # Extract emails from stdout and file
-            emails = self.extract_emails_from_harvester(result.stdout, temp_filename)
-            
-            # Clean up temp file
-            try:
-                os.unlink(temp_filename)
-                os.unlink(temp_filename.replace('.json', '.xml'))
-                os.unlink(temp_filename.replace('.json', '.html'))
-            except:
-                pass
+            # Parse emails from output
+            emails = self.parse_harvester_output(result.stdout, result.stderr, domain)
             
             return {
                 "emails": emails,
                 "count": len(emails),
                 "domain": domain,
-                "sources": sources,
+                "sources": sources_string,
                 "method": "theHarvester",
-                "status": "success",
-                "raw_output": result.stdout[:500] if result.stdout else "No output"
+                "status": "success" if emails else "no_results",
+                "raw_output": (result.stdout + result.stderr)[:300],
+                "return_code": result.returncode
             }
             
         except subprocess.TimeoutExpired:
-            return self.fallback_with_patterns(domain, "timeout")
-        except subprocess.CalledProcessError as e:
-            return self.fallback_with_patterns(domain, f"process_error: {e}")
+            return {"emails": [], "error": "timeout", "method": "theHarvester"}
         except Exception as e:
-            return self.fallback_with_patterns(domain, f"general_error: {str(e)}")
+            return {"emails": [], "error": str(e), "method": "theHarvester"}
     
-    def extract_emails_from_harvester(self, stdout, temp_filename):
-        """Extract emails from theHarvester output with proper filtering"""
+    def parse_harvester_output(self, stdout, stderr, domain):
+        """Parse theHarvester output more aggressively"""
         emails = set()
+        full_output = (stdout or "") + " " + (stderr or "")
         
-        # Split output into lines for better parsing
-        lines = stdout.split('\n') if stdout else []
+        if not full_output:
+            return []
         
-        # Flag to track if we're in the results section
-        in_results_section = False
-        
-        for line in lines:
-            line = line.strip()
-            
-            # Skip theHarvester header/info lines
-            if any(skip in line.lower() for skip in [
-                'theharvester', 'christian martorella', 'edge-security', 
-                'version', 'searching', 'found', 'total results',
-                'starting', 'finished', 'elapsed time'
-            ]):
-                continue
-                
-            # Look for email section markers
-            if 'emails found' in line.lower() or 'email' in line.lower():
-                in_results_section = True
-                continue
-                
-            # Extract emails only from relevant lines
-            if line and '@' in line:
-                email_patterns = [
-                    r'\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})\b',
-                    r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
-                ]
-                
-                for pattern in email_patterns:
-                    found_emails = re.findall(pattern, line, re.IGNORECASE)
-                    for email in found_emails:
-                        # Skip theHarvester author's email and other false positives
-                        if not any(skip in email.lower() for skip in [
-                            'cmartorella', 'edge-security.com', 'christian',
-                            'theharvester', 'example.com', 'test.com'
-                        ]):
-                            emails.add(email.lower())
-        
-        # Method 2: Try to read from output files
-        possible_files = [
-            temp_filename,
-            temp_filename.replace('.json', '.xml'),
-            temp_filename.replace('.json', '.html'),
-            temp_filename.replace('.json', '.txt')
+        # Multiple email regex patterns
+        patterns = [
+            r'\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})\b',
+            r'([a-zA-Z0-9][a-zA-Z0-9._%+-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,})',
+            r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
         ]
         
-        for file_path in possible_files:
-            try:
-                if os.path.exists(file_path):
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
-                        
-                        # Skip file header/metadata
-                        if 'cmartorella' in content.lower() or 'theharvester' in content.lower():
-                            # Try to find actual results section
-                            content_lines = content.split('\n')
-                            filtered_content = []
-                            
-                            for line in content_lines:
-                                if not any(skip in line.lower() for skip in [
-                                    'theharvester', 'cmartorella', 'edge-security',
-                                    'christian', 'version', 'searching'
-                                ]):
-                                    filtered_content.append(line)
-                            
-                            content = '\n'.join(filtered_content)
-                        
-                        file_emails = re.findall(
-                            r'\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})\b', 
-                            content, 
-                            re.IGNORECASE
-                        )
-                        
-                        for email in file_emails:
-                            if not any(skip in email.lower() for skip in [
-                                'cmartorella', 'edge-security.com', 'christian',
-                                'theharvester', 'example.com', 'test.com'
-                            ]):
-                                emails.add(email.lower())
-            except:
-                continue
+        for pattern in patterns:
+            found = re.findall(pattern, full_output, re.IGNORECASE)
+            emails.update([email.lower().strip() for email in found])
         
-        # Filter emails by domain if possible
-        filtered_emails = self.filter_emails(list(emails))
-        
-        return filtered_emails
-
-    def filter_emails(self, emails):
-        """Filter out invalid and unwanted emails with stricter rules"""
-        filtered = []
+        # Filter out unwanted emails
+        filtered_emails = []
         skip_patterns = [
-            # theHarvester author and tool references
-            'cmartorella', 'edge-security.com', 'christian', 'theharvester',
-            # Common false positives
-            'noreply', 'no-reply', 'donotreply', 'example.com', 'test.com',
-            'localhost', 'sentry', 'github.com', 'gitlab.com', 'stackoverflow.com',
-            'linkedin.com', 'facebook.com', 'twitter.com', 'instagram.com',
-            # Tool and service emails
-            'support@github.com', 'noreply@github.com', 'security@',
-            'abuse@', 'postmaster@', 'webmaster@', 'hostmaster@'
+            'cmartorella', 'edge-security', 'theharvester', 'christian',
+            'example.com', 'test.com', 'localhost', 'github.com',
+            'noreply', 'no-reply', 'donotreply'
         ]
         
         for email in emails:
-            email = email.lower().strip()
-            
-            # Basic email validation
             if '@' in email and '.' in email.split('@')[1]:
-                # Check if it's not in skip patterns
                 if not any(skip in email for skip in skip_patterns):
-                    # Additional validation
-                    if len(email) > 5 and len(email) < 100:  # Reasonable length
-                        # Check if it looks like a real email
-                        parts = email.split('@')
-                        if len(parts) == 2 and len(parts[0]) > 0 and len(parts[1]) > 2:
-                            filtered.append(email)
+                    if len(email) > 5 and len(email) < 100:
+                        filtered_emails.append(email)
         
-        return list(set(filtered))
+        return list(set(filtered_emails))
+    
+    def try_web_scraping(self, domain):
+        """Backup web scraping method"""
+        emails = set()
+        
+        try:
+            # Try HTTPS first, then HTTP
+            for protocol in ['https', 'http']:
+                try:
+                    url = f"{protocol}://{domain}"
+                    response = requests.get(
+                        url,
+                        timeout=15,
+                        headers={
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                        },
+                        verify=False,
+                        allow_redirects=True
+                    )
+                    
+                    if response.status_code == 200:
+                        # Extract emails from page
+                        page_emails = re.findall(
+                            r'\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})\b',
+                            response.text,
+                            re.IGNORECASE
+                        )
+                        emails.update([email.lower() for email in page_emails])
+                        
+                        # Try common pages
+                        common_pages = ['/contact', '/about', '/contact-us', '/team']
+                        for page in common_pages:
+                            try:
+                                page_response = requests.get(
+                                    f"{protocol}://{domain}{page}",
+                                    timeout=10,
+                                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+                                    verify=False
+                                )
+                                if page_response.status_code == 200:
+                                    page_emails = re.findall(
+                                        r'\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})\b',
+                                        page_response.text,
+                                        re.IGNORECASE
+                                    )
+                                    emails.update([email.lower() for email in page_emails])
+                            except:
+                                continue
+                        break  # Success with this protocol
+                        
+                except requests.RequestException:
+                    continue  # Try next protocol
+                    
+        except Exception as e:
+            pass
+        
+        # Filter emails to domain-relevant ones
+        domain_emails = []
+        for email in emails:
+            email_domain = email.split('@')[1] if '@' in email else ''
+            if (domain.lower() in email_domain or 
+                email_domain in domain.lower() or
+                any(prefix in email for prefix in ['info@', 'contact@', 'sales@', 'support@', 'admin@'])):
+                domain_emails.append(email)
+        
+        return {
+            "emails": list(set(domain_emails)),
+            "method": "web_scraping"
+        }
     
     def fallback_with_patterns(self, domain, error_reason):
-        """Fallback to pattern generation when theHarvester fails"""
+        """Enhanced fallback with more realistic patterns"""
+        # Generate smarter email patterns
         prefixes = [
             'info', 'contact', 'support', 'sales', 'admin', 'hello',
-            'help', 'service', 'office', 'mail', 'team', 'general'
+            'help', 'service', 'office', 'mail', 'team', 'general',
+            'inquiry', 'customer', 'business', 'marketing', 'export',
+            'international', 'trading', 'orders', 'procurement'
         ]
         
-        fallback_emails = [f"{prefix}@{domain}" for prefix in prefixes]
+        # For food ingredient exporters, add industry-specific prefixes
+        if any(word in domain.lower() for word in ['food', 'ingredient', 'spice', 'export', 'trading']):
+            prefixes.extend(['export', 'international', 'trading', 'orders', 'procurement', 'quality'])
+        
+        fallback_emails = [f"{prefix}@{domain}" for prefix in prefixes[:12]]  # Limit to 12
         
         return {
             "emails": fallback_emails,
             "count": len(fallback_emails),
             "domain": domain,
-            "method": "fallback_patterns",
+            "method": "smart_patterns",
             "status": "fallback",
             "error": error_reason,
-            "note": "theHarvester failed, using pattern generation"
+            "note": f"Generated {len(fallback_emails)} potential email patterns for {domain}"
         }
     
     def validate_email_batch(self, emails):
+        """Email validation with better error handling"""
+        validated_emails = []
+        
+        for email in emails[:10]:  # Limit validation
+            try:
+                response = requests.post(
+                    self.email_validator_url,
+                    json={"email": email},
+                    timeout=5,
+                    headers={'Content-Type': 'application/json'}
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    validated_emails.append({
+                        "email": email,
+                        "valid": data.get("valid", False),
+                        "deliverable": data.get("deliverable", False),
+                        "disposable": data.get("disposable", False)
+                    })
+                else:
+                    # Include email even if validation fails
+                    validated_emails.append({
+                        "email": email,
+                        "valid": "unknown",
+                        "validation_error": f"HTTP {response.status_code}"
+                    })
+                    
+            except Exception as e:
+                validated_emails.append({
+                    "email": email,
+                    "valid": "unknown",
+                    "validation_error": "timeout_or_error"
+                })
+        
+        return validated_emails
+
         """Validate emails using external API"""
         validated_emails = []
         
