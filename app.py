@@ -29,13 +29,19 @@ class ComprehensiveEmailFinder:
                 "name": "rapid-email-verifier",
                 "url": "https://rapid-email-verifier.fly.dev/api/validate",
                 "method": "POST",
-                "format": "json"
+                "format": "json_body"
             },
             {
-                "name": "emailvalidation",
+                "name": "emailvalidation-io",
                 "url": "https://api.emailvalidation.io/v1/info",
                 "method": "GET", 
-                "format": "params"
+                "format": "query_param"
+            },
+            {
+                "name": "hunter-io-free",
+                "url": "https://api.hunter.io/v2/email-verifier",
+                "method": "GET",
+                "format": "query_param"
             }
         ]
     
@@ -415,76 +421,251 @@ class ComprehensiveEmailFinder:
         return score
     
     def waterfall_email_validation(self, emails):
-        """Waterfall email validation using multiple APIs"""
+        """Enhanced waterfall validation with debugging"""
         validated_emails = []
         
-        for email in emails[:15]:  # Limit validation
+        for email in emails[:10]:  # Limit to prevent timeout
+            print(f"🔍 Validating email: {email}")
+            
             validation_result = None
             
-            # Try each validation API in order
-            for api in self.validation_apis:
-                try:
-                    validation_result = self.validate_with_api(email, api)
-                    if validation_result and validation_result.get('valid') is not None:
-                        break  # Success, use this result
-                except:
-                    continue  # Try next API
+            # Try rapid-email-verifier first
+            rapid_api = self.validation_apis[0]  # rapid-email-verifier
+            validation_result = self.validate_with_api(email, rapid_api)
             
-            # If all APIs fail, add with unknown status
-            if not validation_result:
-                validation_result = {
-                    "email": email,
-                    "valid": "unknown",
-                    "error": "all_validation_apis_failed"
-                }
+            # If rapid verifier fails or returns unknown, try alternative validation
+            if (not validation_result or 
+                validation_result.get('valid') == 'unknown' or 
+                validation_result.get('error')):
+                
+                print(f"Rapid verifier failed for {email}, trying alternative...")
+                validation_result = self.alternative_email_validation(email)
             
             validated_emails.append(validation_result)
+            
+            # Add small delay between requests
+            time.sleep(0.5)
         
         return validated_emails
     
-    def validate_with_api(self, email, api_config):
-        """Validate email with specific API"""
+    def alternative_email_validation(self, email):
+        """Alternative email validation methods"""
         try:
-            if api_config["method"] == "POST":
-                response = requests.post(
-                    api_config["url"],
-                    json={"email": email},
-                    timeout=8,
-                    headers={'Content-Type': 'application/json'}
-                )
-            else:  # GET
-                response = requests.get(
-                    f"{api_config['url']}?email={email}",
-                    timeout=8
-                )
+            # Method 1: Basic format validation
+            email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+            format_valid = re.match(email_regex, email) is not None
             
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Normalize response format
-                return {
-                    "email": email,
-                    "valid": data.get("valid", data.get("deliverable", False)),
-                    "deliverable": data.get("deliverable", data.get("valid", False)),
-                    "disposable": data.get("disposable", False),
-                    "role_account": data.get("role_account", False),
-                    "validator": api_config["name"]
+            # Method 2: Domain validation
+            domain = email.split('@')[1] if '@' in email else ''
+            domain_valid = self.validate_domain(domain)
+            
+            # Method 3: Common patterns check
+            is_role_account = any(role in email.lower() for role in [
+                'admin', 'support', 'help', 'info', 'contact', 'sales',
+                'marketing', 'hr', 'careers', 'noreply', 'no-reply'
+            ])
+            
+            # Method 4: Disposable email check
+            disposable_domains = [
+                '10minutemail.com', 'tempmail.org', 'guerrillamail.com',
+                'mailinator.com', 'yopmail.com', '33mail.com'
+            ]
+            is_disposable = any(disp_domain in email.lower() for disp_domain in disposable_domains)
+            
+            # Combine validation results
+            likely_valid = (format_valid and domain_valid and not is_disposable)
+            
+            return {
+                "email": email,
+                "valid": likely_valid,
+                "deliverable": likely_valid and not is_role_account,
+                "disposable": is_disposable,
+                "role_account": is_role_account,
+                "validator": "alternative_validation",
+                "validation_details": {
+                    "format_valid": format_valid,
+                    "domain_valid": domain_valid,
+                    "is_disposable": is_disposable,
+                    "is_role_account": is_role_account
                 }
-            else:
-                return {
-                    "email": email,
-                    "valid": "unknown",
-                    "error": f"HTTP {response.status_code}",
-                    "validator": api_config["name"]
-                }
-                
+            }
+            
         except Exception as e:
             return {
                 "email": email,
-                "valid": "unknown", 
-                "error": str(e)[:50],
+                "valid": "unknown",
+                "error": f"Alternative validation error: {str(e)[:50]}",
+                "validator": "alternative_validation"
+            }
+
+    def validate_with_api(self, email, api_config):
+        """Fixed API validation with proper request formats"""
+        try:
+            headers = {
+                'User-Agent': random.choice(self.user_agents),
+                'Accept': 'application/json'
+            }
+            
+            if api_config["name"] == "rapid-email-verifier":
+                # Correct format for rapid-email-verifier
+                payload = {"email": email}
+                headers['Content-Type'] = 'application/json'
+                
+                response = requests.post(
+                    api_config["url"],
+                    json=payload,  # Use json parameter, not data
+                    headers=headers,
+                    timeout=10
+                )
+                
+                print(f"🔍 Rapid verifier response for {email}: {response.status_code}")
+                print(f"Response text: {response.text[:200]}")
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        print(f"Parsed data: {data}")
+                        
+                        return {
+                            "email": email,
+                            "valid": data.get("valid", False),
+                            "deliverable": data.get("deliverable", data.get("valid", False)),
+                            "disposable": data.get("disposable", False),
+                            "role_account": data.get("role_account", False),
+                            "validator": api_config["name"],
+                            "raw_response": data
+                        }
+                    except json.JSONDecodeError:
+                        print(f"JSON decode error for {email}")
+                        return {
+                            "email": email,
+                            "valid": "unknown",
+                            "error": "json_decode_error",
+                            "validator": api_config["name"],
+                            "raw_response": response.text
+                        }
+                
+            elif api_config["name"] == "emailvalidation-io":
+                # EmailValidation.io format
+                params = {"email": email}
+                response = requests.get(
+                    api_config["url"],
+                    params=params,
+                    headers=headers,
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    return {
+                        "email": email,
+                        "valid": data.get("deliverable", False) or data.get("valid", False),
+                        "deliverable": data.get("deliverable", False),
+                        "disposable": data.get("disposable", False),
+                        "validator": api_config["name"]
+                    }
+            
+            # If we get here, the API call failed
+            return {
+                "email": email,
+                "valid": "unknown",
+                "error": f"HTTP {response.status_code}",
                 "validator": api_config["name"]
             }
+                
+        except requests.exceptions.RequestException as e:
+            return {
+                "email": email,
+                "valid": "unknown", 
+                "error": f"Request error: {str(e)[:50]}",
+                "validator": api_config["name"]
+            }
+        except Exception as e:
+            return {
+                "email": email,
+                "valid": "unknown",
+                "error": f"General error: {str(e)[:50]}",
+                "validator": api_config["name"]
+            }
+
+    def validate_domain(self, domain):
+        """Validate if domain exists and has MX record"""
+        try:
+            import socket
+            import dns.resolver
+            
+            # Check if domain resolves
+            try:
+                socket.gethostbyname(domain)
+                domain_resolves = True
+            except:
+                domain_resolves = False
+            
+            # Check MX record
+            try:
+                mx_records = dns.resolver.resolve(domain, 'MX')
+                has_mx = len(mx_records) > 0
+            except:
+                has_mx = False
+            
+            return domain_resolves or has_mx
+            
+        except ImportError:
+            # If dns.resolver not available, do basic check
+            try:
+                import socket
+                socket.gethostbyname(domain)
+                return True
+            except:
+                return False
+        except:
+            return False
+
+    def debug_rapid_verifier(self, email):
+        """Debug function to test rapid-email-verifier directly"""
+        try:
+            url = "https://rapid-email-verifier.fly.dev/api/validate"
+            
+            # Test different payload formats
+            payloads_to_try = [
+                {"email": email},
+                {"email_address": email},
+                {"address": email}
+            ]
+            
+            for i, payload in enumerate(payloads_to_try):
+                print(f"🔧 Testing payload format {i+1}: {payload}")
+                
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'User-Agent': 'Mozilla/5.0 (compatible; EmailValidator/1.0)'
+                    },
+                    timeout=15
+                )
+                
+                print(f"Status: {response.status_code}")
+                print(f"Headers: {dict(response.headers)}")
+                print(f"Response: {response.text}")
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        print(f"✅ Success with payload {i+1}: {data}")
+                        return data
+                    except:
+                        print(f"❌ JSON decode failed for payload {i+1}")
+                
+                print("---")
+            
+            return None
+            
+        except Exception as e:
+            print(f"❌ Debug error: {str(e)}")
+            return None
 
 # Initialize email finder
 email_finder = ComprehensiveEmailFinder()
