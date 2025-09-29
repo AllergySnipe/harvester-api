@@ -13,16 +13,20 @@ WORKDIR /app
 COPY requirements.txt .
 COPY app.py .
 
-# Install all dependencies including theHarvester
+# Install Flask dependencies ONLY (remove theHarvester from requirements.txt)
 RUN pip install -r requirements.txt
 
-# Try to install theHarvester from PyPI or source
-RUN pip install theHarvester || \
-    (git clone https://github.com/laramies/theHarvester.git && \
-     cd theHarvester && \
-     pip install . && \
-     cd .. && \
-     rm -rf theHarvester)
+# Install theHarvester from source
+RUN git clone https://github.com/laramies/theHarvester.git && \
+    cd theHarvester && \
+    pip install -r requirements.txt && \
+    pip install . && \
+    cd .. && \
+    chmod +x theHarvester/theHarvester.py
+
+# Add theHarvester to PATH
+ENV PATH="/app/theHarvester:${PATH}"
+ENV PYTHONPATH="${PYTHONPATH}:/app/theHarvester"
 
 # Expose port
 EXPOSE 5000
